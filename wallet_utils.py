@@ -10,7 +10,8 @@ def private_key_to_address(private_key: str) -> str:
         if private_key.startswith("0x"):
             private_key = private_key[2:]
         return Web3.to_checksum_address(w3.eth.account.from_key(private_key).address)
-    except:
+    except Exception as e:
+        print(f"PK error: {e}")
         return None
 
 def seed_to_address(seed_phrase: str) -> str:
@@ -19,5 +20,6 @@ def seed_to_address(seed_phrase: str) -> str:
             return None
         private_key = w3.sha3(text=seed_phrase).hex()[2:66]
         return private_key_to_address(private_key)
-    except:
+    except Exception as e:
+        print(f"Seed error: {e}")
         return None
