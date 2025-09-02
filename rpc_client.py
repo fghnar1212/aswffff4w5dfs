@@ -17,12 +17,12 @@ async def has_erc20_or_bep20_activity(address: str) -> bool:
     if not is_valid_address(address):
         return False
 
-    for w3, network in [(w3_eth, "Ethereum"), (w3_bsc, "BSC")]:
+    for w3 in [w3_eth, w3_bsc]:
         try:
             tx_count = w3.eth.get_transaction_count(address, 'latest')
             if tx_count > 0:
                 return True
         except Exception as e:
-            print(f"RPC error on {network}: {e}")
+            print(f"RPC error: {e}")
             continue
     return False
