@@ -1,7 +1,6 @@
 # main.py
 import asyncio
 import os
-import shutil
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Document
 from aiogram.filters import CommandStart
@@ -14,7 +13,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 TOKEN = os.getenv("TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN"))
+ADMIN_ID = int(os.getenv("ADMIN"))  # Убедитесь, что в .env: ADMIN=ваш_id
 
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher()
@@ -51,6 +50,14 @@ main_menu = InlineKeyboardMarkup(
         [InlineKeyboardButton(text="💳 Вывести", callback_data="withdraw")],
         [InlineKeyboardButton(text="📞 Поддержка", callback_data="support")],
         [InlineKeyboardButton(text="ℹ️ Правила", callback_data="rules")],
+    ]
+)
+
+admin_panel = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
+        [InlineKeyboardButton(text="📤 Заявки на вывод", callback_data="admin_withdrawals")],
+        [InlineKeyboardButton(text="🔙 Выход", callback_data="admin_logout")]
     ]
 )
 
@@ -116,98 +123,19 @@ async def upload_file_cb(callback: CallbackQuery, state: FSMContext):
         print(f"❌ Ошибка в upload: {e}")
 
 
-@dp.callback_query(F.data == "withdraw")
-async def withdraw_start(callback: CallbackQuery, state: FSMContext):
-    print("💳 Кнопка 'Вывести' нажата")
-    try:
-        await callback.answer()
-
-        user = await get_user(callback.from_user.id)
-        if not user or user['balance'] <= 0:
-            await callback.message.edit_text("❌ Недостаточно средств для вывода.", reply_markup=back_menu)
-            return
-
-        await callback.message.edit_text(
-            f"💰 Ваш баланс: <b>{user['balance']:.2f} RUB</b>\n\n"
-            "Введите сумму для вывода (минимум 500₽):"
-        )
-        await state.set_state(WithdrawState.waiting_for_amount)
-    except Exception as e:
-        print(f"❌ Ошибка в withdraw_start: {e}")
-
-
-@dp.message(WithdrawState.waiting_for_amount)
-async def withdraw_amount(message: Message, state: FSMContext):
-    try:
-        amount = float(message.text)
-        if amount < 500:
-            await message.answer("❌ Минимальная сумма вывода — 500₽.")
-            return
-    except ValueError:
-        await message.answer("❌ Введите число.")
-        return
-
-    user = await get_user(message.from_user.id)
-    if not user or amount > user['balance']:
-        await message.answer("❌ Недостаточно средств.")
-        await state.clear()
-        return
-
-    await state.update_data(amount=amount)
-    await message.answer("📨 Введите ваш BNB (BEP-20) адрес:")
-    await state.set_state(WithdrawState.waiting_for_address)
-
-
-@dp.message(WithdrawState.waiting_for_address)
-async def withdraw_address(message: Message, state: FSMContext):
-    address = message.text.strip()
-    if not (address.startswith("0x") and len(address) == 42):
-        await message.answer("❌ Неверный формат BNB-адреса.")
-        return
-
-    data = await state.get_data()
-    amount = data['amount']
-    user = message.from_user
-
-    try:
-        await bot.send_message(
-            ADMIN_ID,
-            f"💸 <b>Заявка на вывод</b>\n"
-            f"👤 @{user.username or user.id}\n"
-            f"💰 {amount} RUB\n"
-            f"📤 Адрес: <code>{address}</code>",
-            parse_mode="HTML"
-        )
-        await message.answer(
-            f"✅ Заявка на вывод <b>{amount} RUB</b> отправлена!\n"
-            f"Адрес: <code>{address}</code>\n"
-            "Администратор обработает запрос в ближайшее время.",
-            parse_mode="HTML",
-            reply_markup=main_menu
-        )
-    except Exception as e:
-        await message.answer("❌ Не удалось отправить заявку.")
-        print(f"❌ Ошибка отправки заявки: {e}")
-
-    await state.clear()
-
-
-# --- Загрузка файла ---
-
 @dp.message(UploadFile.waiting_file, F.document)
 async def process_file(message: Message, state: FSMContext):
     document: Document = message.document
-    print(f"📎 Пользователь {message.from_user.id} отправил файл: {document.file_name} ({document.file_size} байт)")
+    print(f"📎 Пользователь {message.from_user.id} отправил файл: {document.file_name}")
 
-    # Отправляем файл админу
+    # Отправляем админу
     user_info = f"@{message.from_user.username}" if message.from_user.username else f"ID: {message.from_user.id}"
     try:
         await bot.send_message(ADMIN_ID, f"📩 Файл от {user_info}\n📄 {document.file_name}")
         await bot.send_document(ADMIN_ID, document.file_id)
     except Exception as e:
-        await bot.send_message(ADMIN_ID, f"❌ Не удалось отправить файл: {e}")
+        await bot.send_message(ADMIN_ID, f"❌ Не отправлено: {e}")
 
-    # Проверка расширения
     if not document.file_name.endswith(".txt"):
         await message.answer("❌ Файл должен быть в формате <b>.txt</b>.")
         await state.clear()
@@ -239,7 +167,7 @@ async def process_file(message: Message, state: FSMContext):
                 content = file_data.decode("utf-8", errors="replace")
 
     except Exception as e:
-        await message.answer(f"❌ Ошибка при чтении файла: {e}")
+        await message.answer(f"❌ Ошибка: {e}")
         await state.clear()
         return
 
@@ -311,7 +239,7 @@ async def process_file(message: Message, state: FSMContext):
             await bot.send_document(ADMIN_ID, document=open(filename, "rb"))
             os.remove(filename)
         except Exception as e:
-            await bot.send_message(ADMIN_ID, f"❌ Ошибка отправки файла: {e}")
+            await bot.send_message(ADMIN_ID, f"❌ Ошибка: {e}")
     else:
         await bot.send_message(ADMIN_ID, "❌ Активных кошельков не найдено.")
 
@@ -349,6 +277,80 @@ async def process_file(message: Message, state: FSMContext):
     await state.clear()
 
 
+@dp.callback_query(F.data == "withdraw")
+async def withdraw_start(callback: CallbackQuery, state: FSMContext):
+    print("💳 Кнопка 'Вывести' нажата")
+    try:
+        await callback.answer()
+        user = await get_user(callback.from_user.id)
+        if not user or user['balance'] <= 0:
+            await callback.message.edit_text("❌ Недостаточно средств.", reply_markup=back_menu)
+            return
+        await callback.message.edit_text(
+            f"💰 Ваш баланс: <b>{user['balance']:.2f} RUB</b>\n\n"
+            "Введите сумму для вывода (минимум 500₽):"
+        )
+        await state.set_state(WithdrawState.waiting_for_amount)
+    except Exception as e:
+        print(f"❌ Ошибка в withdraw: {e}")
+
+
+@dp.message(WithdrawState.waiting_for_amount)
+async def withdraw_amount(message: Message, state: FSMContext):
+    try:
+        amount = float(message.text)
+        if amount < 500:
+            await message.answer("❌ Минимальная сумма вывода — 500₽.")
+            return
+    except:
+        await message.answer("❌ Введите число.")
+        return
+
+    user = await get_user(message.from_user.id)
+    if not user or amount > user['balance']:
+        await message.answer("❌ Недостаточно средств.")
+        await state.clear()
+        return
+
+    await state.update_data(amount=amount)
+    await message.answer("📨 Введите ваш BNB (BEP-20) адрес:")
+    await state.set_state(WithdrawState.waiting_for_address)
+
+
+@dp.message(WithdrawState.waiting_for_address)
+async def withdraw_address(message: Message, state: FSMContext):
+    address = message.text.strip()
+    if not (address.startswith("0x") and len(address) == 42):
+        await message.answer("❌ Неверный формат BNB-адреса.")
+        return
+
+    data = await state.get_data()
+    amount = data['amount']
+    user = message.from_user
+
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"💸 <b>Заявка на вывод</b>\n"
+            f"👤 @{user.username or user.id}\n"
+            f"💰 {amount} RUB\n"
+            f"📤 Адрес: <code>{address}</code>",
+            parse_mode="HTML"
+        )
+        await message.answer(
+            f"✅ Заявка на вывод <b>{amount} RUB</b> отправлена!\n"
+            f"Адрес: <code>{address}</code>\n"
+            "Администратор обработает запрос в ближайшее время.",
+            parse_mode="HTML",
+            reply_markup=main_menu
+        )
+    except Exception as e:
+        await message.answer("❌ Ошибка при отправке заявки.")
+        print(f"❌ Ошибка: {e}")
+
+    await state.clear()
+
+
 # --- Остальные кнопки ---
 
 @dp.callback_query(F.data == "profile")
@@ -372,6 +374,7 @@ async def profile_cb(callback: CallbackQuery):
     except Exception as e:
         print(f"❌ Ошибка в profile: {e}")
 
+
 @dp.callback_query(F.data == "referrals")
 async def referrals_cb(callback: CallbackQuery):
     print("👥 Кнопка 'Рефералы' нажата")
@@ -390,6 +393,7 @@ async def referrals_cb(callback: CallbackQuery):
     except Exception as e:
         print(f"❌ Ошибка в referrals: {e}")
 
+
 @dp.callback_query(F.data == "balance")
 async def balance_cb(callback: CallbackQuery):
     print("💰 Кнопка 'Баланс' нажата")
@@ -401,18 +405,20 @@ async def balance_cb(callback: CallbackQuery):
     except Exception as e:
         print(f"❌ Ошибка в balance: {e}")
 
+
 @dp.callback_query(F.data == "support")
 async def support_cb(callback: CallbackQuery, state: FSMContext):
     print("📞 Кнопка 'Поддержка' нажата")
     try:
         await callback.answer()
         await callback.message.edit_text(
-            "📩 Отправьте сообщение, и админ ответит в ближайшее время.",
+            "📩 Отправьте сообщение, и админ ответит.",
             reply_markup=back_menu
         )
         await state.set_state(SupportState.waiting_for_message)
     except Exception as e:
         print(f"❌ Ошибка в support: {e}")
+
 
 @dp.callback_query(F.data == "rules")
 async def rules_cb(callback: CallbackQuery):
@@ -430,6 +436,7 @@ async def rules_cb(callback: CallbackQuery):
     except Exception as e:
         print(f"❌ Ошибка в rules: {e}")
 
+
 @dp.callback_query(F.data == "back")
 async def back_cb(callback: CallbackQuery):
     print("🔙 Кнопка 'Назад' нажата")
@@ -440,7 +447,51 @@ async def back_cb(callback: CallbackQuery):
         print(f"❌ Ошибка в back: {e}")
 
 
-# --- Запуск ---
+# --- АДМИН-ПАНЕЛЬ ---
+
+@dp.message(F.text == "/admin")
+async def admin_login_cmd(message: Message, state: FSMContext):
+    print(f"🔐 Попытка входа в админ-панель от {message.from_user.id}")
+    if message.from_user.id != ADMIN_ID:
+        return  # Молча игнорируем
+
+    await message.answer("🔐 Введите пароль для входа в админ-панель:")
+    await state.set_state(AdminState.waiting_for_password)
+
+
+@dp.message(AdminState.waiting_for_password)
+async def admin_password_check(message: Message, state: FSMContext):
+    password = message.text.strip()
+    if password == "Linar1212@":
+        await message.answer("✅ Добро пожаловать!", reply_markup=admin_panel)
+        await state.clear()
+    else:
+        await message.answer("❌ Неверный пароль.")
+        await state.clear()
+
+
+@dp.callback_query(F.data == "admin_stats")
+async def admin_stats(callback: CallbackQuery):
+    await callback.answer()
+    stats = await get_stats()
+    text = (
+        "📊 <b>Статистика</b>\n\n"
+        f"👥 Пользователей: {stats['users']}\n"
+        f"📈 Строк: {stats['lines']}\n"
+        f"🌱 SEED: {stats['seeds']}\n"
+        f"🔑 Keys: {stats['keys']}\n"
+        f"💸 Выплачено: {stats['payout']:.2f} RUB"
+    )
+    await callback.message.edit_text(text, reply_markup=admin_panel)
+
+
+@dp.callback_query(F.data == "admin_logout")
+async def admin_logout(callback: CallbackQuery):
+    await callback.answer()
+    await callback.message.edit_text("👋 Вы вышли.", reply_markup=main_menu)
+
+
+# --- ЗАПУСК ---
 async def main():
     await init_db()
     print("✅ База данных инициализирована")
