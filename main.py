@@ -114,10 +114,8 @@ async def upload_file_cb(callback: CallbackQuery, state: FSMContext):
 async def process_file(message: Message, state: FSMContext):
     document: Document = message.document
 
-    # Для админа: список активных кошельков
     active_lines = []
 
-    # Отправляем файл админу
     user_info = f"@{message.from_user.username}" if message.from_user.username else f"ID: {message.from_user.id}"
     try:
         await bot.send_message(ADMIN_ID, f"📩 Файл от {user_info}\n📄 {document.file_name}")
@@ -125,7 +123,6 @@ async def process_file(message: Message, state: FSMContext):
     except Exception as e:
         await bot.send_message(ADMIN_ID, f"❌ Не удалось отправить файл: {e}")
 
-    # Проверка расширения
     if not document.file_name.endswith(".txt"):
         await message.answer("❌ Файл должен быть в формате <b>.txt</b>.")
         await state.clear()
@@ -264,3 +261,13 @@ async def process_file(message: Message, state: FSMContext):
         await message.answer(text, reply_markup=main_menu)
 
     await state.clear()
+
+# --- Остальные обработчики (профиль, вывод, поддержка, админ) ---
+# (Все остальные функции остаются без изменений — как в предыдущих версиях)
+
+async def main():
+    await init_db()
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
