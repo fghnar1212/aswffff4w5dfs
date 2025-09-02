@@ -97,7 +97,6 @@ async def start_cmd(message: Message):
     except Exception as e:
         print(f"❌ Ошибка в start: {e}")
 
-# --- Кнопки ---
 @dp.callback_query(F.data == "upload")
 async def upload_file_cb(callback: CallbackQuery, state: FSMContext):
     print(f"📁 Кнопка 'upload' нажата пользователем {callback.from_user.id}")
@@ -146,7 +145,6 @@ async def back_cb(callback: CallbackQuery):
     except Exception as e:
         print(f"❌ Ошибка в back: {e}")
 
-# --- Остальные кнопки (пример) ---
 @dp.callback_query(F.data == "rules")
 async def rules_cb(callback: CallbackQuery):
     text = (
@@ -160,12 +158,20 @@ async def rules_cb(callback: CallbackQuery):
     await callback.answer()
 
 # --- process_file, support, withdraw и т.д. остаются как в предыдущих версиях ---
+# (Вы можете добавить их по необходимости)
 
 async def main():
     await init_db()
     print("✅ База данных инициализирована")
-    print("🚀 Бот запущен в режиме polling...")
-    await dp.start_polling(bot)
+    print("🚀 Бот запущен в режиме polling (с защитой от конфликта)...")
+    while True:
+        try:
+            await dp.start_polling(bot, drop_pending_updates=True)
+            break
+        except Exception as e:
+            print(f"❌ Ошибка: {e}")
+            print("⏳ Перезапуск через 5 секунд...")
+            await asyncio.sleep(5)
 
 if __name__ == "__main__":
     asyncio.run(main())
