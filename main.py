@@ -59,6 +59,7 @@ back_menu = InlineKeyboardMarkup(
 
 @dp.message(CommandStart())
 async def start_cmd(message: Message):
+    print(f"📩 /start от {message.from_user.id}")
     try:
         args = message.text.split()
         referrer_id = None
@@ -94,10 +95,12 @@ async def start_cmd(message: Message):
     except TelegramForbiddenError:
         pass
     except Exception as e:
-        print(f"Error in start_cmd: {e}")
+        print(f"❌ Ошибка в start: {e}")
 
+# --- Кнопки ---
 @dp.callback_query(F.data == "upload")
 async def upload_file_cb(callback: CallbackQuery, state: FSMContext):
+    print(f"📁 Кнопка 'upload' нажата пользователем {callback.from_user.id}")
     try:
         await callback.message.answer(
             "📂 Загрузите файл в формате <b>.txt</b>.\n\n"
@@ -106,24 +109,62 @@ async def upload_file_cb(callback: CallbackQuery, state: FSMContext):
         )
         await state.set_state(UploadFile.waiting_file)
         await callback.answer()
-    except TelegramForbiddenError:
+    except Exception as e:
+        print(f"❌ Ошибка в upload: {e}")
+        await callback.answer("Ошибка", show_alert=True)
+
+@dp.callback_query(F.data == "profile")
+async def profile_cb(callback: CallbackQuery):
+    print(f"👤 Кнопка 'profile' нажата пользователем {callback.from_user.id}")
+    try:
+        user = await get_user(callback.from_user.id)
+        if not user:
+            await callback.message.edit_text("❌ Ошибка загрузки профиля.")
+            await callback.answer()
+            return
+
+        text = (
+            f"👤 <b>Профиль</b>\n\n"
+            f"🆔 ID: <code>{user['user_id']}</code>\n"
+            f"📝 Строк: {user['total_lines']}\n"
+            f"🌱 SEED: {user['unique_seeds']}\n"
+            f"🔑 Keys: {user['unique_keys']}\n"
+            f"💰 Заработано: {user['balance']:.2f} RUB"
+        )
+        await callback.message.edit_text(text, reply_markup=back_menu)
         await callback.answer()
     except Exception as e:
-        print(f"Error in upload: {e}")
+        print(f"❌ Ошибка в profile: {e}")
         await callback.answer("Ошибка", show_alert=True)
 
 @dp.callback_query(F.data == "back")
 async def back_cb(callback: CallbackQuery):
+    print(f"🔙 Кнопка 'back' нажата")
     try:
         await callback.message.edit_text("Главное меню:", reply_markup=main_menu)
         await callback.answer()
     except Exception as e:
-        print(f"Error in back: {e}")
+        print(f"❌ Ошибка в back: {e}")
 
-# Другие кнопки (профиль, баланс и т.д.) — аналогично, с callback.answer()
+# --- Остальные кнопки (пример) ---
+@dp.callback_query(F.data == "rules")
+async def rules_cb(callback: CallbackQuery):
+    text = (
+        "📜 <b>Правила</b>\n\n"
+        "1. Только .txt файлы\n"
+        "2. Только активные кошельки (ETH/BNB)\n"
+        "3. Обман = бан\n"
+        "4. Выплаты в 23:00 (МСК)"
+    )
+    await callback.message.edit_text(text, reply_markup=back_menu)
+    await callback.answer()
+
+# --- process_file, support, withdraw и т.д. остаются как в предыдущих версиях ---
 
 async def main():
     await init_db()
+    print("✅ База данных инициализирована")
+    print("🚀 Бот запущен в режиме polling...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
