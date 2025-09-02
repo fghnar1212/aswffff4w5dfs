@@ -9,21 +9,28 @@ from aiogram.client.default import DefaultBotProperties
 import os
 from dotenv import load_dotenv
 
+# Загружаем переменные
 load_dotenv()
+
+# Токен и ID админа
 TOKEN = os.getenv("TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN"))
 
+# Бот и диспетчер
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher()
 
+# 🔽 Импортируем hash_line напрямую
 from database import (
     init_db, get_or_create_user, register_referral, is_duplicate,
     add_wallet_hash, update_user_stats, get_user, get_stats,
-    get_referral_count, get_referral_earnings, add_referral_bonus
+    get_referral_count, get_referral_earnings, add_referral_bonus,
+    hash_line  # ✅ Теперь используем напрямую
 )
 from wallet_utils import seed_to_address, private_key_to_address
 from rpc_client import has_erc20_or_bep20_activity
 
+# FSM состояния
 class UploadFile(StatesGroup):
     waiting_file = State()
 
@@ -46,6 +53,7 @@ back_menu = InlineKeyboardMarkup(
     inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="back")]]
 )
 
+# Команда /start
 @dp.message(CommandStart())
 async def start_cmd(message: Message):
     args = message.text.split()
@@ -62,6 +70,7 @@ async def start_cmd(message: Message):
     if referrer_id:
         await register_referral(message.from_user.id, referrer_id)
 
+    # ✅ Исправлена ссылка (без пробела)
     ref_link = f"https://t.me/your_bot_username_bot?start=ref_{message.from_user.id}"
     text = (
         "👋 <b>Добро пожаловать!</b>\n\n"
@@ -82,6 +91,7 @@ async def start_cmd(message: Message):
     )
     await message.answer(text, reply_markup=main_menu)
 
+# Загрузка файла
 @dp.callback_query(F.data == "upload")
 async def upload_file_cb(callback: CallbackQuery, state: FSMContext):
     await callback.message.answer(
@@ -169,7 +179,8 @@ async def process_file(message: Message, state: FSMContext):
         if not address:
             continue
 
-        h = database.hash_line(line)
+        # ✅ Используем напрямую
+        h = hash_line(line)
         if await is_duplicate(h):
             continue
 
@@ -211,6 +222,7 @@ async def process_file(message: Message, state: FSMContext):
     await message.answer(text, reply_markup=main_menu)
     await state.clear()
 
+# Поддержка
 @dp.callback_query(F.data == "support")
 async def support_start(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
@@ -261,6 +273,7 @@ async def reply_to_user(message: Message):
     except Exception as e:
         await message.answer(f"❌ Не удалось отправить сообщение: {e}")
 
+# Профиль
 @dp.callback_query(F.data == "profile")
 async def profile_cb(callback: CallbackQuery):
     user = await get_user(callback.from_user.id)
@@ -280,10 +293,12 @@ async def profile_cb(callback: CallbackQuery):
     await callback.message.edit_text(text, reply_markup=back_menu)
     await callback.answer()
 
+# Рефералы
 @dp.callback_query(F.data == "referrals")
 async def referrals_cb(callback: CallbackQuery):
     ref_count = await get_referral_count(callback.from_user.id)
     earnings = await get_referral_earnings(callback.from_user.id)
+    # ✅ Без пробела
     ref_link = f"https://t.me/your_bot_username_bot?start=ref_{callback.from_user.id}"
     text = (
         f"👥 <b>Рефералы</b>\n\n"
@@ -294,6 +309,7 @@ async def referrals_cb(callback: CallbackQuery):
     await callback.message.edit_text(text, reply_markup=back_menu)
     await callback.answer()
 
+# Баланс
 @dp.callback_query(F.data == "balance")
 async def balance_cb(callback: CallbackQuery):
     user = await get_user(callback.from_user.id)
@@ -301,6 +317,7 @@ async def balance_cb(callback: CallbackQuery):
     await callback.message.edit_text(f"💰 Баланс: <b>{bal:.2f} RUB</b>", reply_markup=back_menu)
     await callback.answer()
 
+# Правила
 @dp.callback_query(F.data == "rules")
 async def rules_cb(callback: CallbackQuery):
     text = (
@@ -326,11 +343,13 @@ async def rules_cb(callback: CallbackQuery):
     await callback.message.edit_text(text, reply_markup=back_menu)
     await callback.answer()
 
+# Назад
 @dp.callback_query(F.data == "back")
 async def back_cb(callback: CallbackQuery):
     await callback.message.edit_text("Главное меню:", reply_markup=main_menu)
     await callback.answer()
 
+# Статистика (для админа)
 @dp.message(F.text == "/stats")
 async def stats_cmd(message: Message):
     if message.from_user.id != ADMIN_ID:
@@ -346,6 +365,7 @@ async def stats_cmd(message: Message):
     )
     await message.answer(text)
 
+# Запуск
 async def main():
     await init_db()
     await dp.start_polling(bot)
