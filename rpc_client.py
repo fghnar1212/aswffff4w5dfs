@@ -1,6 +1,7 @@
 # rpc_client.py
 from web3 import Web3
 
+# Используем Ankr RPC (не требует API-ключей)
 ETH_RPC = "https://rpc.ankr.com/eth/8ce0dd039fed69285b7b4c243d2ba88dad2b133969e45a7eb7207d8b085646a8"
 BSC_RPC = "https://rpc.ankr.com/bsc/8ce0dd039fed69285b7b4c243d2ba88dad2b133969e45a7eb7207d8b085646a8"
 
