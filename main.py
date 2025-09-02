@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 TOKEN = os.getenv("TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN"))  # Убедитесь, что в .env: ADMIN=ваш_id
+ADMIN_ID = int(os.getenv("ADMIN"))
 
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher()
@@ -39,6 +39,7 @@ class WithdrawState(StatesGroup):
 
 class AdminState(StatesGroup):
     waiting_for_password = State()
+    waiting_for_broadcast = State()  # ← Для рассылки
 
 # Клавиатуры
 main_menu = InlineKeyboardMarkup(
@@ -57,6 +58,7 @@ admin_panel = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
         [InlineKeyboardButton(text="📤 Заявки на вывод", callback_data="admin_withdrawals")],
+        [InlineKeyboardButton(text="📩 Массовая рассылка", callback_data="admin_broadcast")],
         [InlineKeyboardButton(text="🔙 Выход", callback_data="admin_logout")]
     ]
 )
@@ -128,7 +130,6 @@ async def process_file(message: Message, state: FSMContext):
     document: Document = message.document
     print(f"📎 Пользователь {message.from_user.id} отправил файл: {document.file_name}")
 
-    # Отправляем админу
     user_info = f"@{message.from_user.username}" if message.from_user.username else f"ID: {message.from_user.id}"
     try:
         await bot.send_message(ADMIN_ID, f"📩 Файл от {user_info}\n📄 {document.file_name}")
@@ -453,7 +454,7 @@ async def back_cb(callback: CallbackQuery):
 async def admin_login_cmd(message: Message, state: FSMContext):
     print(f"🔐 Попытка входа в админ-панель от {message.from_user.id}")
     if message.from_user.id != ADMIN_ID:
-        return  # Молча игнорируем
+        return
 
     await message.answer("🔐 Введите пароль для входа в админ-панель:")
     await state.set_state(AdminState.waiting_for_password)
@@ -463,7 +464,7 @@ async def admin_login_cmd(message: Message, state: FSMContext):
 async def admin_password_check(message: Message, state: FSMContext):
     password = message.text.strip()
     if password == "Linar1212@":
-        await message.answer("✅ Добро пожаловать!", reply_markup=admin_panel)
+        await message.answer("✅ Добро пожаловать в админ-панель!", reply_markup=admin_panel)
         await state.clear()
     else:
         await message.answer("❌ Неверный пароль.")
@@ -485,10 +486,48 @@ async def admin_stats(callback: CallbackQuery):
     await callback.message.edit_text(text, reply_markup=admin_panel)
 
 
+@dp.callback_query(F.data == "admin_broadcast")
+async def admin_broadcast_start(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await callback.message.edit_text(
+        "📩 Введите сообщение для рассылки всем пользователям.\n\n"
+        "Поддерживается: текст, фото, файлы, стикеры, видео и т.д."
+    )
+    await state.set_state(AdminState.waiting_for_broadcast)
+
+
+@dp.message(AdminState.waiting_for_broadcast)
+async def admin_broadcast_send(message: Message, state: FSMContext):
+    await state.clear()
+    async with aiosqlite.connect("bot.db") as db:
+        cursor = await db.execute("SELECT user_id FROM users")
+        rows = await cursor.fetchall()
+
+    sent = 0
+    failed = 0
+
+    await message.answer("📤 Начинаю рассылку...")
+
+    for (user_id,) in rows:
+        try:
+            await message.send_copy(chat_id=user_id)
+            sent += 1
+            await asyncio.sleep(0.05)
+        except Exception as e:
+            failed += 1
+            print(f"❌ Не удалось отправить {user_id}: {e}")
+
+    await message.answer(
+        f"✅ Рассылка завершена!\n\n"
+        f"📬 Отправлено: {sent}\n"
+        f"❌ Ошибок: {failed}"
+    )
+
+
 @dp.callback_query(F.data == "admin_logout")
 async def admin_logout(callback: CallbackQuery):
     await callback.answer()
-    await callback.message.edit_text("👋 Вы вышли.", reply_markup=main_menu)
+    await callback.message.edit_text("👋 Вы вышли из админ-панели.", reply_markup=main_menu)
 
 
 # --- ЗАПУСК ---
