@@ -99,7 +99,7 @@ async def start_cmd(message: Message):
 
 @dp.callback_query(F.data == "upload")
 async def upload_file_cb(callback: CallbackQuery, state: FSMContext):
-    print(f"📁 Кнопка 'upload' нажата пользователем {callback.from_user.id}")
+    print("📁 Кнопка 'upload' нажата")
     try:
         await callback.message.answer(
             "📂 Загрузите файл в формате <b>.txt</b>.\n\n"
@@ -114,7 +114,7 @@ async def upload_file_cb(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "profile")
 async def profile_cb(callback: CallbackQuery):
-    print(f"👤 Кнопка 'profile' нажата пользователем {callback.from_user.id}")
+    print("👤 Кнопка 'profile' нажата")
     try:
         user = await get_user(callback.from_user.id)
         if not user:
@@ -136,42 +136,18 @@ async def profile_cb(callback: CallbackQuery):
         print(f"❌ Ошибка в profile: {e}")
         await callback.answer("Ошибка", show_alert=True)
 
-@dp.callback_query(F.data == "back")
-async def back_cb(callback: CallbackQuery):
-    print(f"🔙 Кнопка 'back' нажата")
+@dp.callback_query(F.data == "referrals")
+async def referrals_cb(callback: CallbackQuery):
+    print("👥 Кнопка 'referrals' нажата")
     try:
-        await callback.message.edit_text("Главное меню:", reply_markup=main_menu)
-        await callback.answer()
-    except Exception as e:
-        print(f"❌ Ошибка в back: {e}")
-
-@dp.callback_query(F.data == "rules")
-async def rules_cb(callback: CallbackQuery):
-    text = (
-        "📜 <b>Правила</b>\n\n"
-        "1. Только .txt файлы\n"
-        "2. Только активные кошельки (ETH/BNB)\n"
-        "3. Обман = бан\n"
-        "4. Выплаты в 23:00 (МСК)"
-    )
-    await callback.message.edit_text(text, reply_markup=back_menu)
-    await callback.answer()
-
-# --- process_file, support, withdraw и т.д. остаются как в предыдущих версиях ---
-# (Вы можете добавить их по необходимости)
-
-async def main():
-    await init_db()
-    print("✅ База данных инициализирована")
-    print("🚀 Бот запущен в режиме polling (с защитой от конфликта)...")
-    while True:
-        try:
-            await dp.start_polling(bot, drop_pending_updates=True)
-            break
-        except Exception as e:
-            print(f"❌ Ошибка: {e}")
-            print("⏳ Перезапуск через 5 секунд...")
-            await asyncio.sleep(5)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+        ref_count = await get_referral_count(callback.from_user.id)
+        earnings = await get_referral_earnings(callback.from_user.id)
+        ref_link = f"https://t.me/your_bot_username_bot?start=ref_{callback.from_user.id}"
+        text = (
+            f"👥 <b>Рефералы</b>\n\n"
+            f"🔗 Ссылка: <code>{ref_link}</code>\n"
+            f"👥 Приглашено: {ref_count}\n"
+            f"💸 Заработано: {earnings:.2f} RUB"
+        )
+        await callback.message.edit_text(text, reply_markup=back_menu)
+       
