@@ -10,6 +10,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramBadRequest
 from dotenv import load_dotenv
+import aiosqlite  # 🔴 ОБЯЗАТЕЛЬНО: без этого ошибка NameError
 
 load_dotenv()
 
@@ -41,6 +42,7 @@ class WithdrawState(StatesGroup):
 class AdminState(StatesGroup):
     waiting_for_password = State()
     waiting_for_broadcast = State()
+
 
 # --- Клавиатуры ---
 main_menu = InlineKeyboardMarkup(inline_keyboard=[
@@ -94,7 +96,6 @@ async def start_cmd(message: Message):
     await message.answer(text, reply_markup=main_menu)
 
 
-# --- Основные кнопки ---
 @dp.callback_query(F.data == "upload")
 async def upload_file_cb(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -111,7 +112,6 @@ async def process_file(message: Message, state: FSMContext):
     document = message.document
     user_info = f"@{message.from_user.username}" if message.from_user.username else f"ID: {message.from_user.id}"
     
-    # Уведомление админу
     try:
         await bot.send_message(ADMIN_ID, f"📩 Файл от {user_info}\n📄 {document.file_name}")
     except:
@@ -421,11 +421,13 @@ async def admin_stats(callback: CallbackQuery):
 @dp.callback_query(F.data == "admin_broadcast")
 async def admin_broadcast_start(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
+        await callback.answer("❌ Доступ запрещён", show_alert=True)
         return
+    
     await callback.answer()
     await callback.message.edit_text(
-        "📩 Отправьте сообщение для рассылки всем пользователям.\n\n"
-        "Поддерживается: текст, фото, файлы, стикеры, видео и т.д.",
+        "📩 Отправьте сообщение для рассылки.\n"
+        "Поддерживается: текст, фото, видео, файлы и т.д.",
         reply_markup=back_menu
     )
     await state.set_state(AdminState.waiting_for_broadcast)
@@ -434,15 +436,20 @@ async def admin_broadcast_start(callback: CallbackQuery, state: FSMContext):
 @dp.message(AdminState.waiting_for_broadcast)
 async def admin_broadcast_send(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
-        await message.answer("❌ Доступ запрещён")
+        await message.answer("❌ Доступ запрещён.")
         await state.clear()
         return
 
+    broadcast_message = message
     await state.clear()
 
     async with aiosqlite.connect("bot.db") as db:
         cursor = await db.execute("SELECT user_id FROM users")
         rows = await cursor.fetchall()
+
+    if not rows:
+        await message.answer("📭 Нет пользователей для рассылки.", reply_markup=admin_panel)
+        return
 
     sent = 0
     failed = 0
@@ -451,17 +458,24 @@ async def admin_broadcast_send(message: Message, state: FSMContext):
 
     for (user_id,) in rows:
         try:
-            await message.send_copy(chat_id=user_id)
+            await broadcast_message.send_copy(chat_id=user_id)
             sent += 1
             await asyncio.sleep(0.05)
         except Exception as e:
+            error_msg = str(e).lower()
+            if "bot_blocked" in error_msg or "user_deactivated" in error_msg:
+                print(f"🚫 Пользователь заблокировал бота: {user_id}")
+            elif "chat_not_found" in error_msg:
+                print(f"❌ Чат не найден: {user_id}")
+            else:
+                print(f"⚠️ Ошибка при отправке {user_id}: {e}")
             failed += 1
-            print(f"❌ Не удалось отправить {user_id}: {e}")
 
     await message.answer(
-        f"✅ Рассылка завершена!\n\n"
-        f"📬 Отправлено: {sent}\n"
-        f"❌ Ошибок: {failed}",
+        f"✅ <b>Рассылка завершена!</b>\n\n"
+        f"📬 Успешно: <b>{sent}</b>\n"
+        f"❌ Ошибок: <b>{failed}</b>",
+        parse_mode='HTML',
         reply_markup=admin_panel
     )
 
