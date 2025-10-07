@@ -8,9 +8,9 @@ from aiogram.filters import CommandStart
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 from aiogram.client.default import DefaultBotProperties
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from dotenv import load_dotenv
-import aiosqlite  # 🔴 ОБЯЗАТЕЛЬНО: без этого ошибка NameError
+import aiosqlite  # 🔴 Обязательно!
 
 load_dotenv()
 
@@ -243,144 +243,86 @@ async def process_file(message: Message, state: FSMContext):
     await state.clear()
 
 
-@dp.callback_query(F.data == "withdraw")
-async def withdraw_start(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
-    user = await get_user(callback.from_user.id)
-    if not user or user['balance'] <= 0:
-        await callback.message.edit_text("❌ Недостаточно средств.", reply_markup=back_menu)
-        return
-    await callback.message.edit_text(
-        f"💰 Ваш баланс: <b>{user['balance']:.2f} RUB</b>\n\n"
-        "Введите сумму для вывода (минимум 500₽):"
-    )
-    await state.set_state(WithdrawState.waiting_for_amount)
-
-
-@dp.message(WithdrawState.waiting_for_amount)
-async def withdraw_amount(message: Message, state: FSMContext):
-    try:
-        amount = float(message.text)
-        if amount < 500:
-            await message.answer("❌ Минимальная сумма вывода — 500₽.")
-            return
-    except:
-        await message.answer("❌ Введите число.")
-        return
-
-    user = await get_user(message.from_user.id)
-    if not user or amount > user['balance']:
-        await message.answer("❌ Недостаточно средств.")
-        await state.clear()
-        return
-
-    await state.update_data(amount=amount)
-    await message.answer("📨 Введите ваш BNB (BEP-20) адрес:")
-
-
-@dp.message(WithdrawState.waiting_for_address)
-async def withdraw_address(message: Message, state: FSMContext):
-    address = message.text.strip()
-    if not (address.startswith("0x") and len(address) == 42 and all(c in "0123456789abcdefABCDEF" for c in address[2:])):
-        await message.answer("❌ Неверный формат BNB-адреса.")
-        return
-
-    data = await state.get_data()
-    amount = data['amount']
-    user = message.from_user
-
-    try:
-        await bot.send_message(
-            ADMIN_ID,
-            f"💸 <b>Заявка на вывод</b>\n"
-            f"👤 @{user.username or user.id}\n"
-            f"💰 {amount} RUB\n"
-            f"📤 Адрес: <code>{address}</code>",
-            parse_mode="HTML"
-        )
-        await message.answer(
-            f"✅ Заявка на вывод <b>{amount} RUB</b> отправлена!\n"
-            f"Адрес: <code>{address}</code>\n"
-            "Администратор обработует запрос в ближайшее время.",
-            parse_mode="HTML",
-            reply_markup=main_menu
-        )
-    except Exception as e:
-        await message.answer("❌ Ошибка при отправке заявки.")
-        print(f"❌ Ошибка: {e}")
-
-    await state.clear()
-
-
-# --- Другие кнопки ---
+# --- Исправленная кнопка "Профиль" ---
 @dp.callback_query(F.data == "profile")
 async def profile_cb(callback: CallbackQuery):
-    await callback.answer()
-    user = await get_user(callback.from_user.id)
-    if not user:
-        await callback.message.edit_text("❌ Ошибка.", reply_markup=back_menu)
-        return
-    text = (
-        f"👤 <b>Профиль</b>\n\n"
-        f"🆔 ID: <code>{user['user_id']}</code>\n"
-        f"📝 Строк: {user['total_lines']}\n"
-        f"🌱 SEED: {user['unique_seeds']}\n"
-        f"🔑 Keys: {user['unique_keys']}\n"
-        f"💰 Заработано: {user['balance']:.2f} RUB"
-    )
-    await callback.message.edit_text(text, reply_markup=back_menu)
+    try:
+        await callback.answer()
+
+        # Получаем пользователя
+        user = await get_user(callback.from_user.id)
+        if not user:
+            # Автоматически создаём
+            await get_or_create_user(callback.from_user.id, callback.from_user.username or "unknown")
+            user = await get_user(callback.from_user.id)
+
+        text = (
+            f"👤 <b>Профиль</b>\n\n"
+            f"🆔 ID: <code>{user['user_id']}</code>\n"
+            f"📝 Всего строк: {user['total_lines']}\n"
+            f"🌱 Уникальных SEED: {user['unique_seeds']}\n"
+            f"🔑 Уникальных Keys: {user['unique_keys']}\n"
+            f"💰 Заработано: {user['balance']:.2f} RUB"
+        )
+
+        # Избегаем ошибки "message is not modified"
+        if callback.message.text != text:
+            await callback.message.edit_text(text, reply_markup=back_menu)
+        else:
+            await callback.answer()
+
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            await callback.answer()
+        else:
+            await callback.message.answer("❌ Ошибка: " + str(e), reply_markup=back_menu)
+    except Exception as e:
+        print(f"🔴 Ошибка в профиле: {e}")
+        await callback.message.answer("❌ Не удалось загрузить профиль.", reply_markup=back_menu)
 
 
 @dp.callback_query(F.data == "referrals")
 async def referrals_cb(callback: CallbackQuery):
-    await callback.answer()
-    ref_count = await get_referral_count(callback.from_user.id)
-    earnings = await get_referral_earnings(callback.from_user.id)
-    ref_link = f"https://t.me/your_bot_username_bot?start=ref_{callback.from_user.id}"
-    text = (
-        f"👥 <b>Рефералы</b>\n\n"
-        f"🔗 Ссылка: <code>{ref_link}</code>\n"
-        f"👥 Приглашено: {ref_count}\n"
-        f"💸 Заработано: {earnings:.2f} RUB"
-    )
-    await callback.message.edit_text(text, reply_markup=back_menu)
+    try:
+        await callback.answer()
+        ref_count = await get_referral_count(callback.from_user.id)
+        earnings = await get_referral_earnings(callback.from_user.id)
+        ref_link = f"https://t.me/your_bot_username_bot?start=ref_{callback.from_user.id}"
+        text = (
+            f"👥 <b>Рефералы</b>\n\n"
+            f"🔗 Ссылка: <code>{ref_link}</code>\n"
+            f"👥 Приглашено: {ref_count}\n"
+            f"💸 Заработано: {earnings:.2f} RUB"
+        )
+        await callback.message.edit_text(text, reply_markup=back_menu)
+    except Exception as e:
+        print(f"❌ Ошибка в referrals: {e}")
+        await callback.message.answer("❌ Ошибка загрузки.", reply_markup=back_menu)
 
 
 @dp.callback_query(F.data == "balance")
 async def balance_cb(callback: CallbackQuery):
-    await callback.answer()
-    user = await get_user(callback.from_user.id)
-    bal = user['balance'] if user else 0.0
-    await callback.message.edit_text(f"💰 Баланс: <b>{bal:.2f} RUB</b>", reply_markup=back_menu)
-
-
-@dp.callback_query(F.data == "support")
-async def support_cb(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
-    await callback.message.edit_text("📩 Отправьте сообщение, и админ ответит.", reply_markup=back_menu)
-    await state.set_state(SupportState.waiting_for_message)
-
-
-@dp.callback_query(F.data == "rules")
-async def rules_cb(callback: CallbackQuery):
-    await callback.answer()
-    text = (
-        "📜 <b>Правила</b>\n\n"
-        "1️⃣ Только .txt файлы\n"
-        "2️⃣ Только активные кошельки (ETH/BNB)\n"
-        "3️⃣ Обман = бан\n"
-        "4️⃣ Выплаты в 23:00 (МСК)"
-    )
-    await callback.message.edit_text(text, reply_markup=back_menu)
+    try:
+        await callback.answer()
+        user = await get_user(callback.from_user.id)
+        bal = user['balance'] if user else 0.0
+        await callback.message.edit_text(f"💰 Баланс: <b>{bal:.2f} RUB</b>", reply_markup=back_menu)
+    except Exception as e:
+        print(f"❌ Ошибка в balance: {e}")
+        await callback.message.answer("❌ Ошибка.", reply_markup=back_menu)
 
 
 @dp.callback_query(F.data == "back")
 async def back_cb(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
-    current_state = await state.get_state()
-    if current_state:
-        await state.clear()
-    await callback.message.edit_text("Главное меню:", reply_markup=main_menu)
+    try:
+        await callback.answer()
+        current_state = await state.get_state()
+        if current_state:
+            await state.clear()
+        await callback.message.edit_text("Главное меню:", reply_markup=main_menu)
+    except Exception as e:
+        print(f"❌ Ошибка в back: {e}")
+        await callback.message.answer("Главное меню:", reply_markup=main_menu)
 
 
 # --- Админ-панель ---
@@ -405,17 +347,21 @@ async def admin_password_check(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == "admin_stats")
 async def admin_stats(callback: CallbackQuery):
-    await callback.answer()
-    stats = await get_stats()
-    text = (
-        "📊 <b>Статистика</b>\n\n"
-        f"👥 Пользователей: {stats['users']}\n"
-        f"📈 Строк: {stats['lines']}\n"
-        f"🌱 SEED: {stats['seeds']}\n"
-        f"🔑 Keys: {stats['keys']}\n"
-        f"💸 Выплачено: {stats['payout']:.2f} RUB"
-    )
-    await callback.message.edit_text(text, reply_markup=admin_panel)
+    try:
+        await callback.answer()
+        stats = await get_stats()
+        text = (
+            "📊 <b>Статистика</b>\n\n"
+            f"👥 Пользователей: {stats['users']}\n"
+            f"📈 Строк: {stats['lines']}\n"
+            f"🌱 SEED: {stats['seeds']}\n"
+            f"🔑 Keys: {stats['keys']}\n"
+            f"💸 Выплачено: {stats['payout']:.2f} RUB"
+        )
+        await callback.message.edit_text(text, reply_markup=admin_panel)
+    except Exception as e:
+        print(f"❌ Ошибка в статистике: {e}")
+        await callback.message.answer("❌ Ошибка.", reply_markup=admin_panel)
 
 
 @dp.callback_query(F.data == "admin_broadcast")
@@ -423,11 +369,9 @@ async def admin_broadcast_start(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("❌ Доступ запрещён", show_alert=True)
         return
-    
     await callback.answer()
     await callback.message.edit_text(
-        "📩 Отправьте сообщение для рассылки.\n"
-        "Поддерживается: текст, фото, видео, файлы и т.д.",
+        "📩 Отправьте сообщение для рассылки.\nПоддерживается всё.",
         reply_markup=back_menu
     )
     await state.set_state(AdminState.waiting_for_broadcast)
@@ -448,13 +392,12 @@ async def admin_broadcast_send(message: Message, state: FSMContext):
         rows = await cursor.fetchall()
 
     if not rows:
-        await message.answer("📭 Нет пользователей для рассылки.", reply_markup=admin_panel)
+        await message.answer("📭 Нет пользователей.", reply_markup=admin_panel)
         return
 
     sent = 0
     failed = 0
-
-    await message.answer("📤 Начинаю рассылку...")
+    await message.answer("📤 Рассылка начата...")
 
     for (user_id,) in rows:
         try:
@@ -462,20 +405,11 @@ async def admin_broadcast_send(message: Message, state: FSMContext):
             sent += 1
             await asyncio.sleep(0.05)
         except Exception as e:
-            error_msg = str(e).lower()
-            if "bot_blocked" in error_msg or "user_deactivated" in error_msg:
-                print(f"🚫 Пользователь заблокировал бота: {user_id}")
-            elif "chat_not_found" in error_msg:
-                print(f"❌ Чат не найден: {user_id}")
-            else:
-                print(f"⚠️ Ошибка при отправке {user_id}: {e}")
             failed += 1
+            print(f"❌ {user_id}: {e}")
 
     await message.answer(
-        f"✅ <b>Рассылка завершена!</b>\n\n"
-        f"📬 Успешно: <b>{sent}</b>\n"
-        f"❌ Ошибок: <b>{failed}</b>",
-        parse_mode='HTML',
+        f"✅ Рассылка завершена!\n📬: {sent}, ❌: {failed}",
         reply_markup=admin_panel
     )
 
@@ -483,14 +417,14 @@ async def admin_broadcast_send(message: Message, state: FSMContext):
 @dp.callback_query(F.data == "admin_logout")
 async def admin_logout(callback: CallbackQuery):
     await callback.answer()
-    await callback.message.edit_text("👋 Вы вышли из админ-панели.", reply_markup=main_menu)
+    await callback.message.edit_text("👋 Вы вышли.", reply_markup=main_menu)
 
 
 # --- Запуск ---
 async def main():
     await init_db()
     print("✅ База данных инициализирована")
-    print("🚀 Бот запущен в режиме polling...")
+    print("🚀 Бот запущен...")
     while True:
         try:
             await dp.start_polling(bot, drop_pending_updates=True)
