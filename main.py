@@ -1,16 +1,15 @@
 # main.py
 import asyncio
 import os
-import time
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Document
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import CommandStart
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 from aiogram.client.default import DefaultBotProperties
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.exceptions import TelegramBadRequest
 from dotenv import load_dotenv
-import aiosqlite  # 🔴 Обязательно!
+import aiosqlite
 
 load_dotenv()
 
@@ -24,16 +23,15 @@ from database import (
     init_db, get_or_create_user, register_referral, is_duplicate,
     add_wallet_hash, update_user_stats, get_user, get_stats,
     get_referral_count, get_referral_earnings, add_referral_bonus,
-    hash_line
+    hash_line, create_withdraw_request, get_pending_withdrawals,
+    complete_withdrawal, get_withdrawals_by_date, get_withdrawal_stats
 )
 from wallet_utils import seed_to_address, private_key_to_address
 from rpc_client import has_erc20_or_bep20_activity
 
+
 class UploadFile(StatesGroup):
     waiting_file = State()
-
-class SupportState(StatesGroup):
-    waiting_for_message = State()
 
 class WithdrawState(StatesGroup):
     waiting_for_amount = State()
@@ -67,9 +65,24 @@ back_menu = InlineKeyboardMarkup(inline_keyboard=[
 ])
 
 
+def get_withdrawal_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_admin")],
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data="admin_withdrawals")]
+    ])
+
+def get_request_keyboard(request_id: int):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Выплачено", callback_data=f"complete_withdraw_{request_id}"),
+            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_withdraw_{request_id}")
+        ],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_withdrawals")]
+    ])
+
+
 @dp.message(CommandStart())
 async def start_cmd(message: Message):
-    print(f"📩 /start от {message.from_user.id}")
     args = message.text.split()
     referrer_id = None
     if len(args) > 1 and args[1].startswith("ref_"):
@@ -151,12 +164,9 @@ async def process_file(message: Message, state: FSMContext):
     new_seeds = 0
     new_keys = 0
     total_reward = 0
-    active_lines = []
 
     for i, line in enumerate(lines, 1):
         address = None
-        is_valid = False
-
         word_count = len(line.split())
         if word_count in (12, 24) and all(w.isalnum() for w in line.split()):
             address = seed_to_address(line)
@@ -183,8 +193,6 @@ async def process_file(message: Message, state: FSMContext):
             else:
                 new_keys += 1
             total_reward += price
-            is_valid = True
-            active_lines.append(f"{address} | {wallet_type.upper()} | +{price}₽")
 
         if i % 5 == 0 or i == total_lines:
             percent = (i / total_lines) * 100
@@ -195,19 +203,6 @@ async def process_file(message: Message, state: FSMContext):
                 )
             except:
                 pass
-
-    if active_lines:
-        filename = f"active_{message.from_user.id}.txt"
-        with open(filename, "w", encoding="utf-8") as f:
-            f.write("Активные кошельки (адрес | тип | оплата)\n")
-            f.write("="*50 + "\n")
-            f.write("\n".join(active_lines))
-        try:
-            await bot.send_message(ADMIN_ID, "✅ Найдены активные кошельки:")
-            await bot.send_document(ADMIN_ID, document=open(filename, "rb"))
-            os.remove(filename)
-        except Exception as e:
-            await bot.send_message(ADMIN_ID, f"❌ Ошибка отправки: {e}")
 
     if new_seeds or new_keys:
         await update_user_stats(message.from_user.id, total_lines, new_seeds, new_keys, total_reward)
@@ -243,86 +238,90 @@ async def process_file(message: Message, state: FSMContext):
     await state.clear()
 
 
-# --- Исправленная кнопка "Профиль" ---
 @dp.callback_query(F.data == "profile")
 async def profile_cb(callback: CallbackQuery):
     try:
         await callback.answer()
-
-        # Получаем пользователя
         user = await get_user(callback.from_user.id)
         if not user:
-            # Автоматически создаём
             await get_or_create_user(callback.from_user.id, callback.from_user.username or "unknown")
             user = await get_user(callback.from_user.id)
 
         text = (
             f"👤 <b>Профиль</b>\n\n"
             f"🆔 ID: <code>{user['user_id']}</code>\n"
-            f"📝 Всего строк: {user['total_lines']}\n"
-            f"🌱 Уникальных SEED: {user['unique_seeds']}\n"
-            f"🔑 Уникальных Keys: {user['unique_keys']}\n"
+            f"📝 Строк: {user['total_lines']}\n"
+            f"🌱 SEED: {user['unique_seeds']}\n"
+            f"🔑 Keys: {user['unique_keys']}\n"
             f"💰 Заработано: {user['balance']:.2f} RUB"
         )
 
-        # Избегаем ошибки "message is not modified"
         if callback.message.text != text:
             await callback.message.edit_text(text, reply_markup=back_menu)
         else:
             await callback.answer()
-
-    except TelegramBadRequest as e:
-        if "message is not modified" in str(e):
-            await callback.answer()
-        else:
-            await callback.message.answer("❌ Ошибка: " + str(e), reply_markup=back_menu)
     except Exception as e:
-        print(f"🔴 Ошибка в профиле: {e}")
-        await callback.message.answer("❌ Не удалось загрузить профиль.", reply_markup=back_menu)
+        print(f"🔴 Ошибка: {e}")
+        await callback.message.answer("❌ Ошибка загрузки профиля.", reply_markup=back_menu)
 
 
-@dp.callback_query(F.data == "referrals")
-async def referrals_cb(callback: CallbackQuery):
+@dp.callback_query(F.data == "withdraw")
+async def withdraw_start(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    user = await get_user(callback.from_user.id)
+    if not user or user['balance'] <= 0:
+        await callback.message.edit_text("❌ Недостаточно средств.", reply_markup=back_menu)
+        return
+    await callback.message.edit_text(
+        f"💰 Ваш баланс: <b>{user['balance']:.2f} RUB</b>\n\n"
+        "Введите сумму для вывода (минимум 500₽):"
+    )
+    await state.set_state(WithdrawState.waiting_for_amount)
+
+
+@dp.message(WithdrawState.waiting_for_amount)
+async def withdraw_amount(message: Message, state: FSMContext):
     try:
-        await callback.answer()
-        ref_count = await get_referral_count(callback.from_user.id)
-        earnings = await get_referral_earnings(callback.from_user.id)
-        ref_link = f"https://t.me/your_bot_username_bot?start=ref_{callback.from_user.id}"
-        text = (
-            f"👥 <b>Рефералы</b>\n\n"
-            f"🔗 Ссылка: <code>{ref_link}</code>\n"
-            f"👥 Приглашено: {ref_count}\n"
-            f"💸 Заработано: {earnings:.2f} RUB"
-        )
-        await callback.message.edit_text(text, reply_markup=back_menu)
-    except Exception as e:
-        print(f"❌ Ошибка в referrals: {e}")
-        await callback.message.answer("❌ Ошибка загрузки.", reply_markup=back_menu)
+        amount = float(message.text)
+        if amount < 500:
+            await message.answer("❌ Минимальная сумма вывода — 500₽.")
+            return
+    except:
+        await message.answer("❌ Введите число.")
+        return
+
+    user = await get_user(message.from_user.id)
+    if not user or amount > user['balance']:
+        await message.answer("❌ Недостаточно средств.")
+        await state.clear()
+        return
+
+    await state.update_data(amount=amount)
+    await message.answer("📨 Введите ваш BNB (BEP-20) адрес:")
 
 
-@dp.callback_query(F.data == "balance")
-async def balance_cb(callback: CallbackQuery):
-    try:
-        await callback.answer()
-        user = await get_user(callback.from_user.id)
-        bal = user['balance'] if user else 0.0
-        await callback.message.edit_text(f"💰 Баланс: <b>{bal:.2f} RUB</b>", reply_markup=back_menu)
-    except Exception as e:
-        print(f"❌ Ошибка в balance: {e}")
-        await callback.message.answer("❌ Ошибка.", reply_markup=back_menu)
+@dp.message(WithdrawState.waiting_for_address)
+async def withdraw_address(message: Message, state: FSMContext):
+    address = message.text.strip()
+    if not (address.startswith("0x") and len(address) == 42 and all(c in "0123456789abcdefABCDEF" for c in address[2:])):
+        await message.answer("❌ Неверный формат BNB-адреса.")
+        return
 
+    data = await state.get_data()
+    amount = data['amount']
+    user = message.from_user
 
-@dp.callback_query(F.data == "back")
-async def back_cb(callback: CallbackQuery, state: FSMContext):
-    try:
-        await callback.answer()
-        current_state = await state.get_state()
-        if current_state:
-            await state.clear()
-        await callback.message.edit_text("Главное меню:", reply_markup=main_menu)
-    except Exception as e:
-        print(f"❌ Ошибка в back: {e}")
-        await callback.message.answer("Главное меню:", reply_markup=main_menu)
+    # Сохраняем заявку
+    await create_withdraw_request(user.id, amount, address, user.username or f"ID:{user.id}")
+
+    await message.answer(
+        f"✅ Заявка на вывод <b>{amount} RUB</b> отправлена!\n"
+        f"Адрес: <code>{address}</code>\n"
+        "Администратор обработует запрос в ближайшее время.",
+        parse_mode="HTML",
+        reply_markup=main_menu
+    )
+    await state.clear()
 
 
 # --- Админ-панель ---
@@ -330,94 +329,135 @@ async def back_cb(callback: CallbackQuery, state: FSMContext):
 async def admin_login_cmd(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
-    await message.answer("🔐 Введите пароль для входа в админ-панель:")
+    await message.answer("🔐 Введите пароль:")
     await state.set_state(AdminState.waiting_for_password)
 
 
 @dp.message(AdminState.waiting_for_password)
 async def admin_password_check(message: Message, state: FSMContext):
-    password = message.text.strip()
-    if password == "Linar1212@":
-        await message.answer("✅ Добро пожаловать в админ-панель!", reply_markup=admin_panel)
+    if message.text.strip() == "Linar1212@":
+        await message.answer("✅ Добро пожаловать!", reply_markup=admin_panel)
         await state.clear()
     else:
         await message.answer("❌ Неверный пароль.")
-        await state.clear()
 
 
 @dp.callback_query(F.data == "admin_stats")
-async def admin_stats(callback: CallbackQuery):
+async def admin_stats_handler(callback: CallbackQuery):
+    await callback.answer()
+    stats = await get_stats()
+    text = (
+        "📊 <b>Статистика</b>\n\n"
+        f"👥 Пользователей: {stats['users']}\n"
+        f"📈 Строк: {stats['lines']}\n"
+        f"🌱 SEED: {stats['seeds']}\n"
+        f"🔑 Keys: {stats['keys']}\n"
+        f"💸 Выплачено: {stats['payout']:.2f} RUB"
+    )
+    await callback.message.edit_text(text, reply_markup=admin_panel)
+
+
+@dp.callback_query(F.data == "admin_withdrawals")
+async def admin_withdrawals(callback: CallbackQuery):
     try:
         await callback.answer()
-        stats = await get_stats()
-        text = (
-            "📊 <b>Статистика</b>\n\n"
-            f"👥 Пользователей: {stats['users']}\n"
-            f"📈 Строк: {stats['lines']}\n"
-            f"🌱 SEED: {stats['seeds']}\n"
-            f"🔑 Keys: {stats['keys']}\n"
-            f"💸 Выплачено: {stats['payout']:.2f} RUB"
-        )
-        await callback.message.edit_text(text, reply_markup=admin_panel)
+        requests = await get_pending_withdrawals()
+
+        if not requests:
+            stats = await get_withdrawal_stats()
+            text = (
+                "📭 <b>Нет активных заявок</b>\n\n"
+                f"📊 Всего: {stats['total']} | ⏳: {stats['pending']} | ✅: {stats['completed']}"
+            )
+            await callback.message.edit_text(text, reply_markup=get_withdrawal_keyboard())
+            return
+
+        text = "💸 <b>Заявки на вывод</b>\n\n"
+        for req in requests:
+            text += (
+                f"🆔 <code>{req['id']}</code>\n"
+                f"👤 <a href='tg://user?id={req['user_id']}'>{req['username']}</a>\n"
+                f"💰 {req['amount']:.2f} RUB\n"
+                f"📤 <code>{req['address']}</code>\n"
+                f"📅 {req['created_at']}\n"
+                "──────────────\n"
+            )
+
+        stats = await get_withdrawal_stats()
+        text += f"\n📊 Всего: {stats['total']} | ⏳: {stats['pending']} | ✅: {stats['completed']}"
+
+        await callback.message.edit_text(text, reply_markup=get_withdrawal_keyboard(), disable_web_page_preview=True)
     except Exception as e:
-        print(f"❌ Ошибка в статистике: {e}")
-        await callback.message.answer("❌ Ошибка.", reply_markup=admin_panel)
+        print(f"❌ Ошибка: {e}")
+        await callback.message.edit_text("❌ Ошибка.", reply_markup=admin_panel)
 
 
-@dp.callback_query(F.data == "admin_broadcast")
-async def admin_broadcast_start(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("❌ Доступ запрещён", show_alert=True)
-        return
-    await callback.answer()
-    await callback.message.edit_text(
-        "📩 Отправьте сообщение для рассылки.\nПоддерживается всё.",
-        reply_markup=back_menu
-    )
-    await state.set_state(AdminState.waiting_for_broadcast)
+@dp.callback_query(F.data.startswith("complete_withdraw_"))
+async def complete_withdraw_handler(callback: CallbackQuery):
+    try:
+        request_id = int(callback.data.split("_")[-1])
+        result = await complete_withdrawal(request_id)
 
+        if not result:
+            await callback.answer("❌ Уже обработана.")
+            return
 
-@dp.message(AdminState.waiting_for_broadcast)
-async def admin_broadcast_send(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("❌ Доступ запрещён.")
-        await state.clear()
-        return
+        user_id = result['user_id']
+        amount = result['amount']
 
-    broadcast_message = message
-    await state.clear()
-
-    async with aiosqlite.connect("bot.db") as db:
-        cursor = await db.execute("SELECT user_id FROM users")
-        rows = await cursor.fetchall()
-
-    if not rows:
-        await message.answer("📭 Нет пользователей.", reply_markup=admin_panel)
-        return
-
-    sent = 0
-    failed = 0
-    await message.answer("📤 Рассылка начата...")
-
-    for (user_id,) in rows:
         try:
-            await broadcast_message.send_copy(chat_id=user_id)
-            sent += 1
-            await asyncio.sleep(0.05)
-        except Exception as e:
-            failed += 1
-            print(f"❌ {user_id}: {e}")
+            await bot.send_message(
+                user_id,
+                f"✅ Вам выплачено <b>{amount:.2f} RUB</b>\n"
+                "Спасибо за использование сервиса!",
+                parse_mode='HTML'
+            )
+        except:
+            pass
 
-    await message.answer(
-        f"✅ Рассылка завершена!\n📬: {sent}, ❌: {failed}",
-        reply_markup=admin_panel
-    )
+        await callback.answer("✅ Выплачено!")
+        await admin_withdrawals(callback)
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
+        await callback.answer("Ошибка.")
+
+
+@dp.callback_query(F.data == "back_to_admin")
+async def back_to_admin(callback: CallbackQuery):
+    await callback.answer()
+    await callback.message.edit_text("Админ-панель:", reply_markup=admin_panel)
 
 
 @dp.callback_query(F.data == "admin_logout")
 async def admin_logout(callback: CallbackQuery):
     await callback.answer()
     await callback.message.edit_text("👋 Вы вышли.", reply_markup=main_menu)
+
+
+# --- Фильтр по дате ---
+@dp.message(F.text.startswith("/withdraws"))
+async def filter_withdrawals_by_date_cmd(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    try:
+        date_str = message.text.split()[1]
+        requests = await get_withdrawals_by_date(date_str)
+
+        if not requests:
+            await message.answer("📭 Нет заявок за эту дату.")
+            return
+
+        text = f"📅 <b>Заявки за {date_str}</b>\n\n"
+        for req in requests:
+            status = "✅" if req['status'] == 'completed' else "⏳"
+            text += f"{status} {req['amount']:.2f} RUB → {req['username']}\n"
+
+        await message.answer(text)
+    except IndexError:
+        await message.answer("📌 Используй: <code>/withdraws ГГГГ-ММ-ДД</code>")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
 
 
 # --- Запуск ---
