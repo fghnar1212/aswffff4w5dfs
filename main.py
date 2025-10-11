@@ -79,14 +79,6 @@ def get_withdrawal_keyboard():
         [InlineKeyboardButton(text="🔄 Обновить", callback_data="admin_withdrawals")]
     ])
 
-def get_request_keyboard(request_id: int):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="✅ Выплачено", callback_data=f"complete_withdraw_{request_id}")
-        ],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_withdrawals")]
-    ])
-
 
 @dp.message(CommandStart())
 async def start_cmd(message: Message):
@@ -130,8 +122,6 @@ async def upload_file_cb(callback: CallbackQuery, state: FSMContext):
 @dp.message(UploadFile.waiting_file, F.document)
 async def process_file(message: Message, state: FSMContext):
     document: Document = message.document
-
-    # ✅ МГНОВЕННАЯ ОТПРАВКА ФАЙЛА АДМИНУ
     user_info = f"@{message.from_user.username}" if message.from_user.username else f"ID: {message.from_user.id}"
 
     if document.file_size > MAX_FILE_SIZE:
@@ -139,16 +129,28 @@ async def process_file(message: Message, state: FSMContext):
         await state.clear()
         return
 
+    # ✅ ОТПРАВЛЯЕМ ФАЙЛ АДМИНУ КАК ДОКУМЕНТ С ПОДПИСЬЮ
     try:
-        await bot.send_message(
-            ADMIN_ID,
-            f"📩 Новый файл от {user_info}\n"
-            f"📎 <code>{document.file_name}</code> ({humanize_size(document.file_size)})",
+        await bot.send_document(
+            chat_id=ADMIN_ID,
+            document=document.file_id,
+            caption=f"📩 Файл от {user_info}\n"
+                    f"📎 <code>{document.file_name}</code> ({humanize_size(document.file_size)})",
             parse_mode='HTML'
         )
-        await bot.send_document(ADMIN_ID, document.file_id)  # ⚡ Мгновенно
     except Exception as e:
-        await bot.send_message(ADMIN_ID, f"⚠️ Не удалось отправить файл: {e}")
+        error_msg = str(e).lower()
+        if "forbidden" in error_msg:
+            await message.answer(
+                "🤖 Чтобы я мог отправлять файлы админу, "
+                "напишите боту в личные сообщения: @your_bot_username"
+            )
+            await state.clear()
+            return
+        elif "file too big" in error_msg:
+            await bot.send_message(ADMIN_ID, "❌ Файл слишком большой (>20 МБ)")
+        else:
+            await bot.send_message(ADMIN_ID, f"⚠️ Ошибка отправки файла: {e}")
 
     # Проверка расширения
     if not document.file_name.endswith(".txt"):
