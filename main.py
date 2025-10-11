@@ -73,13 +73,6 @@ back_menu = InlineKeyboardMarkup(inline_keyboard=[
 ])
 
 
-def get_withdrawal_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_admin")],
-        [InlineKeyboardButton(text="🔄 Обновить", callback_data="admin_withdrawals")]
-    ])
-
-
 @dp.message(CommandStart())
 async def start_cmd(message: Message):
     args = message.text.split()
@@ -124,18 +117,19 @@ async def process_file(message: Message, state: FSMContext):
     document: Document = message.document
     user_info = f"@{message.from_user.username}" if message.from_user.username else f"ID: {message.from_user.id}"
 
+    # ✅ ШАГ 1: МГНОВЕННАЯ ПЕРЕСЫЛКА ОРИГИНАЛЬНОГО ФАЙЛА АДМИНУ
     if document.file_size > MAX_FILE_SIZE:
         await message.answer("❌ Файл больше 20 МБ.")
         await state.clear()
         return
 
-    # ✅ ОТПРАВЛЯЕМ ФАЙЛ АДМИНУ КАК ДОКУМЕНТ С ПОДПИСЬЮ
     try:
         await bot.send_document(
             chat_id=ADMIN_ID,
             document=document.file_id,
-            caption=f"📩 Файл от {user_info}\n"
-                    f"📎 <code>{document.file_name}</code> ({humanize_size(document.file_size)})",
+            caption=f"📩 <b>Новый файл от</b> {user_info}\n"
+                    f"📎 <code>{document.file_name}</code>\n"
+                    f"📏 <b>Размер:</b> {humanize_size(document.file_size)}",
             parse_mode='HTML'
         )
     except Exception as e:
@@ -150,14 +144,15 @@ async def process_file(message: Message, state: FSMContext):
         elif "file too big" in error_msg:
             await bot.send_message(ADMIN_ID, "❌ Файл слишком большой (>20 МБ)")
         else:
-            await bot.send_message(ADMIN_ID, f"⚠️ Ошибка отправки файла: {e}")
+            await bot.send_message(ADMIN_ID, f"⚠️ Ошибка при отправке: {e}")
 
-    # Проверка расширения
+    # ✅ ШАГ 2: Проверка формата
     if not document.file_name.endswith(".txt"):
         await message.answer("❌ Поддерживаются только <b>.txt</b> файлы.")
         await state.clear()
         return
 
+    # ✅ ШАГ 3: Анализ содержимого
     await message.answer("📥 Скачиваю и анализирую файл...")
 
     try:
@@ -255,6 +250,7 @@ async def process_file(message: Message, state: FSMContext):
     await state.clear()
 
 
+# --- Профиль ---
 @dp.callback_query(F.data == "profile")
 async def profile_cb(callback: CallbackQuery):
     try:
@@ -282,6 +278,7 @@ async def profile_cb(callback: CallbackQuery):
         await callback.message.answer("❌ Ошибка загрузки профиля.", reply_markup=back_menu)
 
 
+# --- Вывод средств ---
 @dp.callback_query(F.data == "withdraw")
 async def withdraw_start(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -385,7 +382,7 @@ async def admin_withdrawals(callback: CallbackQuery):
                 "📭 <b>Нет активных заявок</b>\n\n"
                 f"📊 Всего: {stats['total']} | ⏳: {stats['pending']} | ✅: {stats['completed']}"
             )
-            await callback.message.edit_text(text, reply_markup=get_withdrawal_keyboard())
+            await callback.message.edit_text(text, reply_markup=admin_panel)
             return
 
         text = "💸 <b>Заявки на вывод</b>\n\n"
@@ -402,7 +399,7 @@ async def admin_withdrawals(callback: CallbackQuery):
         stats = await get_withdrawal_stats()
         text += f"\n📊 Всего: {stats['total']} | ⏳: {stats['pending']} | ✅: {stats['completed']}"
 
-        await callback.message.edit_text(text, reply_markup=get_withdrawal_keyboard(), disable_web_page_preview=True)
+        await callback.message.edit_text(text, reply_markup=admin_panel, disable_web_page_preview=True)
     except Exception as e:
         print(f"❌ Ошибка: {e}")
         await callback.message.edit_text("❌ Ошибка.", reply_markup=admin_panel)
@@ -436,12 +433,6 @@ async def complete_withdraw_handler(callback: CallbackQuery):
     except Exception as e:
         print(f"❌ Ошибка: {e}")
         await callback.answer("Ошибка.")
-
-
-@dp.callback_query(F.data == "back_to_admin")
-async def back_to_admin(callback: CallbackQuery):
-    await callback.answer()
-    await callback.message.edit_text("Админ-панель:", reply_markup=admin_panel)
 
 
 @dp.callback_query(F.data == "admin_logout")
