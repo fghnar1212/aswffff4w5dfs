@@ -2,12 +2,11 @@
 import asyncio
 import os
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Document
 from aiogram.filters import CommandStart
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 from aiogram.client.default import DefaultBotProperties
-from aiogram.exceptions import TelegramBadRequest
 from dotenv import load_dotenv
 import aiosqlite
 
@@ -39,8 +38,17 @@ class WithdrawState(StatesGroup):
 
 class AdminState(StatesGroup):
     waiting_for_password = State()
-    waiting_for_broadcast = State()
 
+
+def humanize_size(size_bytes: int) -> str:
+    for unit in ['B', 'KB', 'MB']:
+        if size_bytes < 1024.0:
+            return f"{size_bytes:.1f} {unit}"
+        size_bytes /= 1024.0
+    return f"{size_bytes:.1f} GB"
+
+
+MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
 
 # --- Клавиатуры ---
 main_menu = InlineKeyboardMarkup(inline_keyboard=[
@@ -74,8 +82,7 @@ def get_withdrawal_keyboard():
 def get_request_keyboard(request_id: int):
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="✅ Выплачено", callback_data=f"complete_withdraw_{request_id}"),
-            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_withdraw_{request_id}")
+            InlineKeyboardButton(text="✅ Выплачено", callback_data=f"complete_withdraw_{request_id}")
         ],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_withdrawals")]
     ])
@@ -122,16 +129,30 @@ async def upload_file_cb(callback: CallbackQuery, state: FSMContext):
 
 @dp.message(UploadFile.waiting_file, F.document)
 async def process_file(message: Message, state: FSMContext):
-    document = message.document
-    user_info = f"@{message.from_user.username}" if message.from_user.username else f"ID: {message.from_user.id}"
-    
-    try:
-        await bot.send_message(ADMIN_ID, f"📩 Файл от {user_info}\n📄 {document.file_name}")
-    except:
-        pass
+    document: Document = message.document
 
+    # ✅ МГНОВЕННАЯ ОТПРАВКА ФАЙЛА АДМИНУ
+    user_info = f"@{message.from_user.username}" if message.from_user.username else f"ID: {message.from_user.id}"
+
+    if document.file_size > MAX_FILE_SIZE:
+        await message.answer("❌ Файл больше 20 МБ.")
+        await state.clear()
+        return
+
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"📩 Новый файл от {user_info}\n"
+            f"📎 <code>{document.file_name}</code> ({humanize_size(document.file_size)})",
+            parse_mode='HTML'
+        )
+        await bot.send_document(ADMIN_ID, document.file_id)  # ⚡ Мгновенно
+    except Exception as e:
+        await bot.send_message(ADMIN_ID, f"⚠️ Не удалось отправить файл: {e}")
+
+    # Проверка расширения
     if not document.file_name.endswith(".txt"):
-        await message.answer("❌ Файл должен быть в формате <b>.txt</b>.")
+        await message.answer("❌ Поддерживаются только <b>.txt</b> файлы.")
         await state.clear()
         return
 
@@ -139,12 +160,6 @@ async def process_file(message: Message, state: FSMContext):
 
     try:
         file = await bot.get_file(document.file_id)
-        max_size = 20 * 1024 * 1024
-        if file.file_size > max_size:
-            await message.answer("❌ Файл слишком большой. Максимум — 20 МБ.")
-            await state.clear()
-            return
-
         file_data = (await bot.download_file(file.file_path)).getvalue()
         content = file_data.decode("utf-8", errors="replace")
     except Exception as e:
@@ -311,7 +326,6 @@ async def withdraw_address(message: Message, state: FSMContext):
     amount = data['amount']
     user = message.from_user
 
-    # Сохраняем заявку
     await create_withdraw_request(user.id, amount, address, user.username or f"ID:{user.id}")
 
     await message.answer(
@@ -434,7 +448,6 @@ async def admin_logout(callback: CallbackQuery):
     await callback.message.edit_text("👋 Вы вышли.", reply_markup=main_menu)
 
 
-# --- Фильтр по дате ---
 @dp.message(F.text.startswith("/withdraws"))
 async def filter_withdrawals_by_date_cmd(message: Message):
     if message.from_user.id != ADMIN_ID:
